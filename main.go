@@ -9,10 +9,26 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"wurk/internal/worktree"
+	"github.com/joakimgrr/wurk/internal/config"
+	"github.com/joakimgrr/wurk/internal/ui"
+	"github.com/joakimgrr/wurk/internal/worktree"
 )
 
-const version = "0.1.0"
+const version = "0.2.0"
+
+// globals are the options every command shares.
+type globals struct {
+	dir string // --dir, overrides where worktrees live
+}
+
+// open builds the manager for the repository around the working directory.
+func (g *globals) open() (*worktree.Manager, error) {
+	cfg, err := config.Load()
+	if err != nil {
+		return nil, err
+	}
+	return worktree.Open(g.dir, cfg)
+}
 
 func main() {
 	if err := newRootCmd().Execute(); err != nil {
@@ -22,7 +38,8 @@ func main() {
 }
 
 func newRootCmd() *cobra.Command {
-	var name, base, dir string
+	g := &globals{}
+	var name, base string
 
 	cmd := &cobra.Command{
 		Use:   "wurk <name>",
@@ -34,7 +51,9 @@ still gets one flat directory. The path is printed on stdout and everything
 else on stderr, so the shell function from "wurk shell-init" can cd into it.`,
 		Example: `  wurk PROJ-2222-work-on-login-system
   wurk -w PROJ-2222-work-on-login-system
-  wurk hotfix-login --base v1.4.2`,
+  wurk hotfix-login --base v1.4.2
+  wurk list
+  wurk rm PROJ-2222-work-on-login-system`,
 		Args:          cobra.MaximumNArgs(1),
 		Version:       version,
 		SilenceUsage:  true,
@@ -51,28 +70,33 @@ else on stderr, so the shell function from "wurk shell-init" can cd into it.`,
 				return errors.New("give the worktree a name")
 			}
 
-			res, err := worktree.Create(name, base, dir)
+			m, err := g.open()
 			if err != nil {
 				return err
 			}
+			res, err := m.Create(name, base)
+			if err != nil {
+				return err
+			}
+
+			msg := cmd.ErrOrStderr()
 			switch {
 			case res.Existed:
-				fmt.Fprintf(cmd.ErrOrStderr(), "wurk: %s is already checked out at %s\n", name, res.Path)
+				ui.Info(msg, "%s is already checked out at %s", ui.Branch(name), ui.Path(res.Path))
 			case res.Base == "":
-				fmt.Fprintf(cmd.ErrOrStderr(), "wurk: checked out %s at %s\n", name, res.Path)
+				ui.Success(msg, "checked out %s at %s", ui.Branch(name), ui.Path(res.Path))
 			default:
-				fmt.Fprintf(cmd.ErrOrStderr(), "wurk: created %s from %s at %s\n", name, res.Base, res.Path)
+				ui.Success(msg, "created %s from %s at %s", ui.Branch(name), res.Base, ui.Path(res.Path))
 			}
 			fmt.Fprintln(cmd.OutOrStdout(), res.Path)
 			return nil
 		},
 	}
 
-	f := cmd.Flags()
-	f.StringVarP(&name, "worktree", "w", "", "name of the worktree and branch, same as passing it positionally")
-	f.StringVar(&base, "base", "", "revision to branch from (default: the repo's default branch)")
-	f.StringVar(&dir, "dir", "", "directory that holds worktrees (env "+worktree.EnvDir+")")
+	cmd.PersistentFlags().StringVar(&g.dir, "dir", "", "directory that holds worktrees (env "+worktree.EnvDir+")")
+	cmd.Flags().StringVarP(&name, "worktree", "w", "", "name of the worktree and branch, same as passing it positionally")
+	cmd.Flags().StringVar(&base, "base", "", "revision to branch from (default: the repo's default branch)")
 
-	cmd.AddCommand(newShellInitCmd())
+	cmd.AddCommand(newListCmd(g), newRemoveCmd(g), newConfigCmd(g), newShellInitCmd())
 	return cmd
 }
