@@ -48,12 +48,13 @@ $ wurk list
    paths relative to ~/dev/myrepo-worktrees
 ```
 
-`STATE` is the column `wurk rm` reads. It refuses a branch whose work has not
-landed, and a worktree with uncommitted changes, until `--force` says to throw
-them away. A **squash-merged** branch counts as landed — wurk rebuilds the
-commit a squash would have produced and asks git whether that content is
-already in the base, so a squash-merging repository does not look like a wall
-of unmerged branches.
+`STATE` is the column `wurk rm` reads: `new` for a branch with no commits of
+its own yet, then `merged`, `squash-merged` or `not merged`. It refuses a
+branch whose work has not landed, and a worktree with uncommitted changes,
+until `--force` says to throw them away. A **squash-merged** branch counts as
+landed — wurk rebuilds the commit a squash would have produced and asks git
+whether that content is already in the base, so a squash-merging repository
+does not look like a wall of unmerged branches.
 
 ## Configuration
 

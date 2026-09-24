@@ -142,7 +142,7 @@ func (m *Manager) Remove(name string, force bool) (RemoveResult, error) {
 			return res, fmt.Errorf("%s is the repository's main worktree", wt.Path)
 		}
 		if samePath(wt.Path, m.repo.Current) {
-			return res, fmt.Errorf("you are inside %s; cd out of it first", wt.Path)
+			return res, fmt.Errorf("you are inside %s; run this from %s", wt.Path, m.repo.Root)
 		}
 		res.Path = wt.Path
 	}

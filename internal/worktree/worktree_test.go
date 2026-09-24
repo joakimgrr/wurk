@@ -303,6 +303,127 @@ func TestList(t *testing.T) {
 	}
 }
 
+// TestUnstartedBranchIsNotCalledMerged covers a branch checked out a moment
+// ago. It is an ancestor of the base, which is what "merged" is normally read
+// off, but nothing has landed because nothing was done.
+func TestUnstartedBranchIsNotCalledMerged(t *testing.T) {
+	m, _ := newManager(t, newRepo(t))
+	if _, err := m.Create("fresh", ""); err != nil {
+		t.Fatal(err)
+	}
+
+	entries, err := m.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	fresh, found := entryFor(entries, "fresh")
+	if !found {
+		t.Fatal("the new worktree is missing from the listing")
+	}
+	if fresh.State != git.Unstarted {
+		t.Errorf("State = %v, want new", fresh.State)
+	}
+
+	// Nothing to lose, so it still goes without --force.
+	out, err := m.Remove("fresh", false)
+	if err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	if out.State != git.Unstarted {
+		t.Errorf("State = %v, want new", out.State)
+	}
+}
+
+// TestCommittingLeavesUnstarted is the other half: once there is a commit, the
+// branch is unmerged work and gets the protection that comes with it.
+func TestCommittingLeavesUnstarted(t *testing.T) {
+	m, _ := newManager(t, newRepo(t))
+	res, err := m.Create("started", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	commit(t, res.Path, "a.txt", "some work")
+
+	entries, err := m.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	started, _ := entryFor(entries, "started")
+	if started.State != git.NotMerged {
+		t.Errorf("State = %v, want not merged", started.State)
+	}
+	if _, err := m.Remove("started", false); err == nil {
+		t.Error("expected Remove to protect a branch that has commits")
+	}
+}
+
+// TestOpenFromTheWorktreeDirectory covers where "cd .." out of a worktree
+// lands: beside the worktrees, which is not itself inside the repository.
+func TestOpenFromTheWorktreeDirectory(t *testing.T) {
+	repo := newRepo(t)
+	m, trees := newManager(t, repo)
+	if _, err := m.Create("beside", ""); err != nil {
+		t.Fatal(err)
+	}
+
+	chdir(t, trees)
+	outside, err := Open("", config.Config{})
+	if err != nil {
+		t.Fatalf("Open from the worktree directory: %v", err)
+	}
+	if !samePath(outside.Repo().Root, repo) {
+		t.Errorf("found repository %q, want %q", outside.Repo().Root, repo)
+	}
+	// Standing in none of them, so none is refused for being the current one.
+	if _, err := outside.Remove("beside", false); err != nil {
+		t.Errorf("Remove from the worktree directory: %v", err)
+	}
+}
+
+// TestOpenIgnoresADirectoryOfClones keeps the search above from guessing: a
+// directory of checked-out projects is not a worktree directory.
+func TestOpenIgnoresADirectoryOfClones(t *testing.T) {
+	dir := t.TempDir()
+	newRepoIn(t, filepath.Join(dir, "alpha"))
+	newRepoIn(t, filepath.Join(dir, "beta"))
+	chdir(t, dir)
+
+	if _, err := Open("", config.Config{}); err == nil {
+		t.Error("a directory of clones was taken for a worktree directory")
+	}
+}
+
+// TestOpenRefusesAmbiguousWorktreeDirectory covers a shared worktree directory
+// holding worktrees of more than one repository.
+func TestOpenRefusesAmbiguousWorktreeDirectory(t *testing.T) {
+	shared := filepath.Join(t.TempDir(), "shared")
+	for _, name := range []string{"one", "two"} {
+		repo := newRepo(t)
+		chdir(t, repo)
+		m, err := Open(shared, config.Config{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := m.Create("wt-"+name, ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	chdir(t, shared)
+
+	if _, err := Open("", config.Config{}); err == nil {
+		t.Error("a worktree directory shared by two repositories should be ambiguous")
+	}
+}
+
+func entryFor(entries []Entry, branch string) (Entry, bool) {
+	for _, e := range entries {
+		if e.Branch == branch {
+			return e, true
+		}
+	}
+	return Entry{}, false
+}
+
 // newManager points a manager at a fresh worktree directory and moves the test
 // into the repository, which is where wurk is normally run from.
 func newManager(t *testing.T, repo string) (*Manager, string) {
@@ -319,7 +440,14 @@ func newManager(t *testing.T, repo string) (*Manager, string) {
 
 func newRepo(t *testing.T) string {
 	t.Helper()
-	dir := t.TempDir()
+	return newRepoIn(t, t.TempDir())
+}
+
+func newRepoIn(t *testing.T, dir string) string {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	runGit(t, dir, "init", "--initial-branch=main")
 	runGit(t, dir, "config", "user.email", "test@example.com")
 	runGit(t, dir, "config", "user.name", "test")

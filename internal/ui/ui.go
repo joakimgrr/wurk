@@ -290,6 +290,8 @@ func stateCell(e worktree.Entry) string {
 		return dim.Render("main worktree")
 	case e.Detached:
 		return dim.Render("—")
+	case e.State == git.Unstarted:
+		return dim.Render("new")
 	case e.State == git.Merged:
 		return green.Render("merged")
 	case e.State == git.Squashed:

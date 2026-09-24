@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
@@ -42,6 +43,9 @@ const (
 	// Squashed means the branch's tree is already in the base, as a squash
 	// merge leaves it: the commits differ but the content landed.
 	Squashed
+	// Unstarted means the branch still sits on the base with no commits of
+	// its own, which is not the same as having had work that landed.
+	Unstarted
 )
 
 func (s MergeState) String() string {
@@ -50,13 +54,31 @@ func (s MergeState) String() string {
 		return "merged"
 	case Squashed:
 		return "squash-merged"
+	case Unstarted:
+		return "new"
 	default:
 		return "not merged"
 	}
 }
 
-// Open locates the repository containing dir.
+// Open locates the repository containing dir. Standing in the directory that
+// holds the worktrees counts too: it is where cd .. out of one lands, and it
+// is not itself inside the repository.
 func Open(dir string) (*Repo, error) {
+	repo, err := openAt(dir)
+	if err == nil {
+		return repo, nil
+	}
+	if beside, found := worktreeBelow(dir); found {
+		if repo, inner := openAt(beside); inner == nil {
+			repo.Current = "" // beside the worktrees, standing in none of them
+			return repo, nil
+		}
+	}
+	return nil, err
+}
+
+func openAt(dir string) (*Repo, error) {
 	common, err := run(dir, "rev-parse", "--path-format=absolute", "--git-common-dir")
 	if err != nil {
 		return nil, errors.New("not inside a git repository")
@@ -67,6 +89,51 @@ func Open(dir string) (*Repo, error) {
 	repo := &Repo{Root: filepath.Dir(common)}
 	repo.Current, _ = run(dir, "rev-parse", "--path-format=absolute", "--show-toplevel")
 	return repo, nil
+}
+
+// worktreeBelow finds the linked worktrees sitting directly under dir and
+// returns one of them. It reports false unless they all belong to the same
+// repository, since a shared worktree directory may hold several.
+func worktreeBelow(dir string) (string, bool) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return "", false
+	}
+	var found, common string
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		path := filepath.Join(dir, entry.Name())
+		// A linked worktree keeps a .git file pointing at the repository. A
+		// clone keeps a .git directory, and a directory of those is just a
+		// directory of projects, not something to guess a repository from.
+		if info, err := os.Stat(filepath.Join(path, ".git")); err != nil || info.IsDir() {
+			continue
+		}
+		gitDir, err := run(path, "rev-parse", "--path-format=absolute", "--git-common-dir")
+		if err != nil {
+			continue
+		}
+		if common == "" {
+			common, found = gitDir, path
+			continue
+		}
+		if gitDir != common {
+			return "", false
+		}
+	}
+	return found, found != ""
+}
+
+// sameCommit reports whether two revisions point at the same commit.
+func (r *Repo) sameCommit(a, b string) bool {
+	left, err := run(r.Root, "rev-parse", a+"^{commit}")
+	if err != nil {
+		return false
+	}
+	right, err := run(r.Root, "rev-parse", b+"^{commit}")
+	return err == nil && left == right
 }
 
 // CheckBranchName reports whether name is usable as a branch name.
@@ -210,6 +277,11 @@ func (r *Repo) DefaultBase() string {
 func (r *Repo) MergeStateOf(branch, base string) MergeState {
 	if !r.RevExists(base) || !r.RevExists(branch) {
 		return NotMerged
+	}
+	// Checked out a moment ago and not committed to yet: an ancestor of the
+	// base, but calling that merged would claim work that never happened.
+	if r.sameCommit(branch, base) {
+		return Unstarted
 	}
 	if ok(r.Root, "merge-base", "--is-ancestor", branch, base) {
 		return Merged

@@ -152,6 +152,24 @@ func TestNoFootnoteWithoutShortenedPaths(t *testing.T) {
 	}
 }
 
+// TestStateLabels pins the words in the column that wurk rm acts on.
+func TestStateLabels(t *testing.T) {
+	for _, tc := range []struct {
+		entry worktree.Entry
+		want  string
+	}{
+		{worktree.Entry{State: git.Unstarted}, "new"},
+		{worktree.Entry{State: git.Merged}, "merged"},
+		{worktree.Entry{State: git.Squashed}, "squash-merged"},
+		{worktree.Entry{State: git.NotMerged}, "not merged"},
+		{worktree.Entry{Main: true, State: git.Merged}, "main worktree"},
+	} {
+		if got := ansi.ReplaceAllString(stateCell(tc.entry), ""); got != tc.want {
+			t.Errorf("state %v rendered as %q, want %q", tc.entry.State, got, tc.want)
+		}
+	}
+}
+
 func TestTruncate(t *testing.T) {
 	for _, tc := range []struct {
 		fn         func(string, int) string

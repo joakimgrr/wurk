@@ -44,6 +44,8 @@ checks and throws the work away.`,
 				ui.Info(msg, "there was no branch %s to delete", ui.Branch(res.Branch))
 			case res.State == git.NotMerged:
 				ui.Warn(msg, "deleted %s, which was not merged into %s", ui.Branch(res.Branch), res.Base)
+			case res.State == git.Unstarted:
+				ui.Success(msg, "deleted %s, which had no commits of its own", ui.Branch(res.Branch))
 			default:
 				ui.Success(msg, "deleted %s (%s into %s)", ui.Branch(res.Branch), res.State, res.Base)
 			}
