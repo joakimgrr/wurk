@@ -357,6 +357,29 @@ func TestCommittingLeavesUnstarted(t *testing.T) {
 	}
 }
 
+// TestNewBranchDoesNotTrackTheBase guards against git's autoSetupMerge. A
+// branch started from origin/main would otherwise adopt it as its upstream,
+// and a later plain push can then land the branch's commits on main instead of
+// creating a branch to open a pull request from.
+func TestNewBranchDoesNotTrackTheBase(t *testing.T) {
+	repo := newRepoWithRemote(t)
+	m, _ := newManager(t, repo)
+
+	res, err := m.Create("feature", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Base != "origin/main" {
+		t.Fatalf("branched from %q, want origin/main, or this proves nothing", res.Base)
+	}
+	if upstream := gitConfig(t, repo, "branch.feature.merge"); upstream != "" {
+		t.Errorf("the new branch tracks %q, want no upstream at all", upstream)
+	}
+	if remote := gitConfig(t, repo, "branch.feature.remote"); remote != "" {
+		t.Errorf("the new branch has remote %q, want none", remote)
+	}
+}
+
 // TestOpenFromTheWorktreeDirectory covers where "cd .." out of a worktree
 // lands: beside the worktrees, which is not itself inside the repository.
 func TestOpenFromTheWorktreeDirectory(t *testing.T) {
@@ -441,6 +464,30 @@ func newManager(t *testing.T, repo string) (*Manager, string) {
 func newRepo(t *testing.T) string {
 	t.Helper()
 	return newRepoIn(t, t.TempDir())
+}
+
+// newRepoWithRemote gives the repository an origin, so that the default base
+// is a remote-tracking branch as it is in real use.
+func newRepoWithRemote(t *testing.T) string {
+	t.Helper()
+	repo := newRepo(t)
+	origin := filepath.Join(t.TempDir(), "origin.git")
+	runGit(t, repo, "init", "--bare", origin)
+	runGit(t, repo, "remote", "add", "origin", origin)
+	runGit(t, repo, "push", "-u", "origin", "main")
+	runGit(t, repo, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+	return repo
+}
+
+func gitConfig(t *testing.T, dir, key string) string {
+	t.Helper()
+	cmd := exec.Command("git", "config", "--get", key)
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
 }
 
 func newRepoIn(t *testing.T, dir string) string {

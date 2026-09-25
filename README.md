@@ -37,6 +37,11 @@ branch of that name in a `feature-login` directory. New branches start from
 `origin/HEAD`, or `--base` says otherwise. Asking twice for the same name just
 takes you back to it.
 
+New branches deliberately do not track the branch they came from, so that a
+stray `git push` can never land your commits on `main`. Push the first time
+with `git push -u origin HEAD`, or set `git config --global push.autoSetupRemote true`
+once and plain `git push` will create the remote branch for you.
+
 ```console
 $ wurk list
    BRANCH                          CHANGES    VS ORIGIN/MAIN  STATE          PATH

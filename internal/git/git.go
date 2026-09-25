@@ -228,7 +228,11 @@ func (r *Repo) WorktreeForBranch(branch string) (Worktree, bool) {
 func (r *Repo) AddWorktree(path, branch, base string) error {
 	args := []string{"worktree", "add"}
 	if base != "" {
-		args = append(args, "-b", branch, path, base)
+		// Without --no-track, a branch started from a remote-tracking ref such
+		// as origin/main adopts it as its upstream, and a later plain push can
+		// then land the branch's commits on main. The first "git push -u" sets
+		// the upstream that was actually meant.
+		args = append(args, "--no-track", "-b", branch, path, base)
 	} else {
 		args = append(args, path, branch)
 	}
