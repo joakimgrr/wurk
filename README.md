@@ -1,4 +1,11 @@
-# wurk
+<br><br>
+<br><br>
+
+<p align="center">
+  <img src="WURK.svg" alt="wurk" width="300">
+</p>
+<br><br>
+<br><br>
 
 A git worktree per task, with the `cd` included.
 
@@ -25,12 +32,13 @@ follows it. Without it, `cd "$(wurk some-name)"` does the same by hand.
 
 ## Commands
 
-| command | what it does |
-| --- | --- |
-| `wurk <name>` | create the branch and worktree, and move into it |
-| `wurk list` | what exists and how it stands |
-| `wurk rm <name>` | remove the worktree and delete the branch |
-| `wurk config` | show the settings; `--init` writes a starter file |
+| command             | what it does                                            |
+| ------------------- | ------------------------------------------------------- |
+| `wurk <name>`       | create the branch and worktree, and move into it        |
+| `wurk list`         | what exists and how it stands                           |
+| `wurk done [name]`  | finish with a worktree: remove it and delete its branch |
+| `wurk setup [name]` | re-run this repository's setup on a worktree            |
+| `wurk config`       | show the settings; `--init` writes a starter file       |
 
 `<name>` is both the branch and the directory, so `feature/login` becomes a
 branch of that name in a `feature-login` directory. New branches start from
@@ -53,13 +61,35 @@ $ wurk list
    paths relative to ~/dev/myrepo-worktrees
 ```
 
-`STATE` is the column `wurk rm` reads: `new` for a branch with no commits of
-its own yet, then `merged`, `squash-merged` or `not merged`. It refuses a
-branch whose work has not landed, and a worktree with uncommitted changes,
-until `--force` says to throw them away. A **squash-merged** branch counts as
-landed — wurk rebuilds the commit a squash would have produced and asks git
-whether that content is already in the base, so a squash-merging repository
-does not look like a wall of unmerged branches.
+`STATE` is the column `wurk done` reads: `new` for a branch with no commits of
+its own yet, then `merged`, `squash-merged` or `not merged`. A
+**squash-merged** branch counts as landed — wurk rebuilds the commit a squash
+would have produced and asks git whether that content is already in the base,
+so a squash-merging repository does not look like a wall of unmerged branches.
+
+### Finishing
+
+```sh
+wurk done                  # the worktree you are standing in
+wurk done some-other-name  # or one you are not
+wurk done --yes            # without being asked anything
+```
+
+Removes the worktree and deletes the branch. Finishing the one you are standing
+in puts you back in the repository afterwards, since where you were is about to
+be gone; naming another leaves you where you are.
+
+Work that has landed goes without comment. Anything else is put to you first:
+
+```console
+$ wurk done
+? PROJ-2222-work-on-login-system is not merged into origin/main and has 2 uncommitted changes. Remove it anyway? [y/N]
+```
+
+Anything but `y` leaves it alone. With no terminal to ask on it stops and says
+so rather than hanging, so `--yes` is what a script wants. The repository keeps
+whatever branch it already had checked out — `done` reports it rather than
+changing it. `rm`, `remove` and `delete` all mean `done`.
 
 ## Configuration
 
@@ -75,6 +105,46 @@ Worktrees default to a sibling of the repository, so `~/dev/myrepo` gets
 `~/dev/myrepo-worktrees/<name>`. The config file overrides that,
 `WURK_WORKTREE_DIR` overrides the file, and `--dir` overrides everything;
 `wurk config` shows which one won.
+
+## Setting up a new worktree
+
+A fresh worktree has none of the things git does not track: no `.env`, no
+`node_modules`. Say what to do about it per repository, and it happens every
+time one is created.
+
+```toml
+[repos."~/dev/myrepo".setup]
+copy   = [".env", ".env.local"]   # brought over from the main worktree
+link   = ["node_modules"]         # symlinked to it instead, for big directories
+run    = ["npm ci"]               # shell commands, in order
+script = ".wurk/setup.sh"         # a file to execute last
+```
+
+The phases run in that order, so the files a command reads are in place before
+it runs. Paths are relative to the repository root, and a source that is not
+there is skipped — `.env.local` exists on some machines and not others. A
+relative `script` is taken from the new worktree, so a script kept in the
+repository runs the branch's own copy of itself.
+
+Commands get the worktree as their working directory and four variables:
+`WURK_WORKTREE`, `WURK_REPO`, `WURK_BRANCH` and `WURK_BASE`.
+
+A step that fails stops the ones after it and makes `wurk` exit non-zero.
+What becomes of the worktree is yours to choose:
+
+```toml
+setup_on_failure = "remove"    # or "keep"
+```
+
+| value    | what happens                                                                                                                                                                            |
+| -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `remove` | the worktree is taken away again, and the branch with it if wurk created it, and your shell stays where it was — the default, so a worktree that exists is one that is ready to work in |
+| `keep`   | the worktree stays, half prepared, and you land in it to fix it                                                                                                                         |
+
+A repository can override the file with `on_failure` in its own `[setup]`.
+Either way, `wurk setup` runs the steps again once you have fixed things, and
+`wurk <name> --no-setup` skips them in the first place — the pair to reach for
+when a `remove` repository keeps taking the evidence away.
 
 ## Development
 
