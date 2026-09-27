@@ -221,6 +221,100 @@ func TestRemoveUncommittedChanges(t *testing.T) {
 	}
 }
 
+// TestCreateInARepoWithNothingCommitted covers a repository straight out of
+// git init. There is nothing to branch from, but git starts an unborn branch
+// here just as checkout -b would, so wurk does too rather than refusing.
+func TestCreateInARepoWithNothingCommitted(t *testing.T) {
+	dir := t.TempDir()
+	runGit(t, dir, "init", "--initial-branch=main")
+	runGit(t, dir, "config", "user.email", "test@example.com")
+	runGit(t, dir, "config", "user.name", "test")
+	m, trees := newManager(t, dir)
+
+	res, err := m.Create("first-branch", "")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if !res.Orphan {
+		t.Errorf("Orphan = false, want the branch reported as having no history")
+	}
+	if want := filepath.Join(trees, "first-branch"); res.Path != want {
+		t.Errorf("Path = %q, want %q", res.Path, want)
+	}
+	if branch := gitOutput(t, res.Path, "branch", "--show-current"); branch != "first-branch" {
+		t.Errorf("checked out %q, want first-branch", branch)
+	}
+
+	// The point of it: the worktree is somewhere work can start.
+	commit(t, res.Path, "app.js", "first commit")
+	if branch := gitOutput(t, res.Path, "rev-parse", "--abbrev-ref", "HEAD"); branch != "first-branch" {
+		t.Errorf("after committing, on %q", branch)
+	}
+}
+
+// TestRemoveAnUnbornBranch covers finishing with such a worktree before
+// anything was committed in it, when there is no branch ref to delete yet.
+func TestRemoveAnUnbornBranch(t *testing.T) {
+	dir := t.TempDir()
+	runGit(t, dir, "init", "--initial-branch=main")
+	runGit(t, dir, "config", "user.email", "test@example.com")
+	runGit(t, dir, "config", "user.name", "test")
+	m, _ := newManager(t, dir)
+
+	res, err := m.Create("never-used", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Nothing was committed, so there is nothing to lose and nothing to ask.
+	if c := m.Inspect("never-used", res.Path); c.Any() {
+		t.Errorf("an unborn branch raised %+v, want nothing", c)
+	}
+	if _, err := m.Remove("never-used", false); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	if _, err := os.Stat(res.Path); !os.IsNotExist(err) {
+		t.Error("the worktree is still there")
+	}
+}
+
+// TestEnsureRemovableGuards covers the refusals no flag gets past. "wurk done"
+// settles these before asking anything, so that it never puts a question about
+// a worktree the answer could not apply to.
+func TestEnsureRemovableGuards(t *testing.T) {
+	repo := newRepo(t)
+	m, _ := newManager(t, repo)
+
+	if err := m.EnsureRemovable("main"); err == nil {
+		t.Error("the default branch should be refused")
+	}
+	if err := m.EnsureRemovable("never-existed"); err == nil {
+		t.Error("an unknown name should be refused")
+	}
+	if _, err := m.Create("ordinary", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.EnsureRemovable("ordinary"); err != nil {
+		t.Errorf("an ordinary worktree should be removable: %v", err)
+	}
+}
+
+// TestEnsureRemovableRefusesTheMainWorktree covers the main worktree sitting
+// on a branch that is not the default one, where the default-branch check
+// would not catch it.
+func TestEnsureRemovableRefusesTheMainWorktree(t *testing.T) {
+	repo := newRepo(t)
+	runGit(t, repo, "switch", "-c", "parked")
+	m, _ := newManager(t, repo)
+
+	err := m.EnsureRemovable("parked")
+	if err == nil {
+		t.Fatal("expected the main worktree to be refused")
+	}
+	if !strings.Contains(err.Error(), "main worktree") {
+		t.Errorf("error = %q, want it to name the main worktree", err)
+	}
+}
+
 func TestRemoveGuards(t *testing.T) {
 	repo := newRepo(t)
 	m, _ := newManager(t, repo)
@@ -232,18 +326,6 @@ func TestRemoveGuards(t *testing.T) {
 		t.Error("expected Remove to refuse an unknown name")
 	}
 
-	res, err := m.Create("stand-here", "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	chdir(t, res.Path)
-	inside, err := Open("", config.Config{WorktreeDir: filepath.Dir(res.Path)})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := inside.Remove("stand-here", true); err == nil || !strings.Contains(err.Error(), "inside") {
-		t.Errorf("error = %v, want a refusal to delete the worktree we are standing in", err)
-	}
 }
 
 // TestRemoveBranchWithoutWorktree covers a branch left behind after its
@@ -377,6 +459,134 @@ func TestNewBranchDoesNotTrackTheBase(t *testing.T) {
 	}
 	if remote := gitConfig(t, repo, "branch.feature.remote"); remote != "" {
 		t.Errorf("the new branch has remote %q, want none", remote)
+	}
+}
+
+// TestRollbackUndoesACreate covers the repositories configured to want nothing
+// left behind when setup fails: the worktree goes, and the branch wurk made
+// with it, even though setup has left untracked files in the way.
+func TestRollbackUndoesACreate(t *testing.T) {
+	repo := newRepo(t)
+	m, _ := newManager(t, repo)
+	res, err := m.Create("rolled-back", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// What a half-finished setup leaves behind, which git would refuse to
+	// discard without being forced.
+	if err := os.WriteFile(filepath.Join(res.Path, ".env"), []byte("copied\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := m.Rollback(res, "rolled-back"); err != nil {
+		t.Fatalf("Rollback: %v", err)
+	}
+	if _, err := os.Stat(res.Path); !os.IsNotExist(err) {
+		t.Error("the worktree is still there")
+	}
+	if branchExists(t, repo, "rolled-back") {
+		t.Error("the branch is still there")
+	}
+}
+
+// TestRollbackKeepsABranchItDidNotCreate covers wurk having only added a
+// worktree to a branch that was already in the repository.
+func TestRollbackKeepsABranchItDidNotCreate(t *testing.T) {
+	repo := newRepo(t)
+	runGit(t, repo, "branch", "was-here-first")
+	m, _ := newManager(t, repo)
+	res, err := m.Create("was-here-first", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Base != "" {
+		t.Fatalf("Base = %q, want empty for an existing branch", res.Base)
+	}
+
+	if err := m.Rollback(res, "was-here-first"); err != nil {
+		t.Fatalf("Rollback: %v", err)
+	}
+	if _, err := os.Stat(res.Path); !os.IsNotExist(err) {
+		t.Error("the worktree is still there")
+	}
+	if !branchExists(t, repo, "was-here-first") {
+		t.Error("a branch wurk did not create was deleted anyway")
+	}
+}
+
+// TestInspectReportsWhatWouldBeLost is what "wurk done" puts to the person
+// before it removes anything.
+func TestInspectReportsWhatWouldBeLost(t *testing.T) {
+	repo := newRepo(t)
+	m, _ := newManager(t, repo)
+	res, err := m.Create("halfway", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Fresh: nothing to lose, nothing to ask about.
+	if c := m.Inspect("halfway", res.Path); c.Any() {
+		t.Errorf("a fresh worktree raised %+v", c)
+	}
+
+	commit(t, res.Path, "a.txt", "work")
+	if err := os.WriteFile(filepath.Join(res.Path, "scratch.txt"), []byte("wip\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	c := m.Inspect("halfway", res.Path)
+	if !c.Any() {
+		t.Fatal("unmerged work with uncommitted changes should raise something")
+	}
+	got := c.Describe()
+	if !strings.Contains(got, "not merged into main") || !strings.Contains(got, "1 uncommitted change") {
+		t.Errorf("Describe() = %q, want both concerns named", got)
+	}
+	if strings.Contains(got, "1 uncommitted changes") {
+		t.Errorf("Describe() = %q, want the singular", got)
+	}
+}
+
+// TestInspectSaysNothingOnceMerged keeps "wurk done" quiet in the ordinary
+// case, where the work has landed and there is nothing to confirm.
+func TestInspectSaysNothingOnceMerged(t *testing.T) {
+	repo := newRepo(t)
+	m, _ := newManager(t, repo)
+	res, err := m.Create("landed", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	commit(t, res.Path, "a.txt", "work")
+	runGit(t, repo, "merge", "--no-ff", "-m", "merge", "landed")
+
+	if c := m.Inspect("landed", res.Path); c.Any() {
+		t.Errorf("a merged, clean worktree raised %+v", c)
+	}
+}
+
+// TestRemoveTakesTheGroundYouStandOn is what "wurk done" is for. The caller
+// moves the shell afterwards, so the removal itself does not object.
+func TestRemoveTakesTheGroundYouStandOn(t *testing.T) {
+	repo := newRepo(t)
+	m, trees := newManager(t, repo)
+	res, err := m.Create("stand-here", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	chdir(t, res.Path)
+	inside, err := Open(trees, config.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !inside.IsCurrent(res.Path) {
+		t.Fatal("IsCurrent should recognise the worktree we chdir'd into")
+	}
+	if _, err := inside.Remove("stand-here", true); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	if _, err := os.Stat(res.Path); !os.IsNotExist(err) {
+		t.Error("the worktree is still there")
 	}
 }
 

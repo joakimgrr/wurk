@@ -54,6 +54,20 @@ func TestShellInit(t *testing.T) {
 	}
 }
 
+// TestDonePrintsAPath is what keeps done out of the passthrough list: its
+// stdout is for cd, so the wrapper has to capture it.
+func TestDoneIsMarkedAsPrintingAPath(t *testing.T) {
+	for _, sub := range newRootCmd().Commands() {
+		if sub.Name() == "done" {
+			if sub.Annotations[annotationPrintsPath] != "true" {
+				t.Error("done must be marked as printing a path, or the shell will not follow it")
+			}
+			return
+		}
+	}
+	t.Fatal("there is no done command")
+}
+
 // TestShellInitCoversEveryCommand guards the wrapper's invariant: a command
 // missing from the passthrough list would have its output swallowed and fed to
 // cd, so the list is generated from the command tree and checked here.
@@ -64,8 +78,14 @@ func TestShellInitCoversEveryCommand(t *testing.T) {
 			t.Fatalf("shell-init %s: %v", shell, err)
 		}
 		for _, sub := range newRootCmd().Commands() {
+			printsPath := sub.Annotations[annotationPrintsPath] == "true"
 			for _, name := range append([]string{sub.Name()}, sub.Aliases...) {
-				if !strings.Contains(stdout, name) {
+				switch {
+				case printsPath && strings.Contains(stdout, name):
+					// Passing it through would hand its path to the terminal
+					// instead of to cd.
+					t.Errorf("the %s function passes %q through, but it prints a path to follow", shell, name)
+				case !printsPath && !strings.Contains(stdout, name):
 					t.Errorf("the %s function does not pass %q straight through", shell, name)
 				}
 			}
@@ -74,14 +94,17 @@ func TestShellInitCoversEveryCommand(t *testing.T) {
 }
 
 func TestSubcommandArguments(t *testing.T) {
-	if _, _, err := execute(t, "rm"); err == nil {
-		t.Error("expected rm to require a name")
-	}
 	if _, _, err := execute(t, "list", "extra"); err == nil {
 		t.Error("expected list to reject arguments")
 	}
 	if _, _, err := execute(t, "config", "extra"); err == nil {
 		t.Error("expected config to reject arguments")
+	}
+	if _, _, err := execute(t, "setup", "one", "two"); err == nil {
+		t.Error("expected setup to take at most one name")
+	}
+	if _, _, err := execute(t, "done", "one", "two"); err == nil {
+		t.Error("expected done to take at most one name")
 	}
 }
 

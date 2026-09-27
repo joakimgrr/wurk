@@ -155,6 +155,13 @@ func (r *Repo) BranchExists(branch string) bool {
 	return ok(r.Root, "show-ref", "--verify", "--quiet", "refs/heads/"+branch)
 }
 
+// HasCommits reports whether anything has been committed yet. A repository
+// straight out of git init has a HEAD that points at a branch with no commit
+// on it, and nothing can be branched from that.
+func (r *Repo) HasCommits() bool {
+	return r.RevExists("HEAD")
+}
+
 // RevExists reports whether rev resolves to a commit.
 func (r *Repo) RevExists(rev string) bool {
 	return ok(r.Root, "rev-parse", "--verify", "--quiet", rev+"^{commit}")
@@ -240,6 +247,15 @@ func (r *Repo) AddWorktree(path, branch, base string) error {
 	return err
 }
 
+// AddOrphanWorktree checks a new branch out at path with no history behind
+// it, which is what a repository with nothing committed yet can offer. Git
+// infers this for a plain -b too, but asking for it outright keeps the intent
+// in the code rather than in git's guess.
+func (r *Repo) AddOrphanWorktree(path, branch string) error {
+	_, err := run(r.Root, "worktree", "add", "--orphan", "-b", branch, path)
+	return err
+}
+
 // RemoveWorktree deletes a worktree. Without force, git refuses to remove one
 // that has uncommitted changes.
 func (r *Repo) RemoveWorktree(path string, force bool) error {
@@ -279,7 +295,12 @@ func (r *Repo) DefaultBase() string {
 // MergeStateOf reports whether branch has already landed in base, treating a
 // squash merge as merged: the commits differ, but the content is there.
 func (r *Repo) MergeStateOf(branch, base string) MergeState {
-	if !r.RevExists(base) || !r.RevExists(branch) {
+	if !r.RevExists(branch) {
+		// An unborn branch has nothing committed on it, so there is nothing
+		// of it to lose.
+		return Unstarted
+	}
+	if !r.RevExists(base) {
 		return NotMerged
 	}
 	// Checked out a moment ago and not committed to yet: an ancestor of the
@@ -311,6 +332,16 @@ func (r *Repo) MergeStateOf(branch, base string) MergeState {
 		return Squashed
 	}
 	return NotMerged
+}
+
+// BranchAt is the branch checked out in a worktree, empty when its HEAD is
+// detached.
+func (r *Repo) BranchAt(path string) string {
+	branch, err := run(path, "rev-parse", "--abbrev-ref", "HEAD")
+	if err != nil || branch == "HEAD" {
+		return ""
+	}
+	return branch
 }
 
 // Changes counts the uncommitted changes in a worktree, untracked files

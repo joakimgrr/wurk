@@ -13,6 +13,10 @@ import (
 // The wrapper captures stdout only for the invocation that creates a worktree,
 // because that one prints a path to cd into. Everything else is handed the
 // terminal directly, so its output stays styled and unbuffered.
+//
+// A printed directory is followed whatever the exit code: a worktree whose
+// setup failed still exists and is the place to fix it from. The code is
+// passed on afterwards, so a caller can still tell that something went wrong.
 // @@CASES@@ is filled in from the command tree.
 const posixShellFunction = `wurk() {
   case "$1" in
@@ -24,14 +28,12 @@ const posixShellFunction = `wurk() {
   local out rc
   out="$(command wurk "$@")"
   rc=$?
-  if [ $rc -ne 0 ]; then
-    return $rc
-  fi
   if [ -d "$out" ]; then
     cd "$out" || return 1
   elif [ -n "$out" ]; then
     printf '%s\n' "$out"
   fi
+  return $rc
 }
 `
 
@@ -47,14 +49,12 @@ const fishShellFunction = `function wurk
     end
     set -l out (command wurk $argv)
     set -l code $status
-    if test $code -ne 0
-        return $code
-    end
     if test -d "$out"
         cd "$out"
     else if test -n "$out"
         printf '%s\n' "$out"
     end
+    return $code
 end
 `
 
@@ -93,12 +93,21 @@ and this function does the cd. Install it once, defaulting to $SHELL:
 	}
 }
 
+// annotationPrintsPath marks a command whose stdout is a path for the shell
+// function to cd into. Those are the ones the wrapper has to capture; every
+// other command wants the terminal to itself.
+const annotationPrintsPath = "wurk.prints_path"
+
 // passthrough lists the first arguments the wrapper must hand straight to the
-// binary: every subcommand and alias, the flags that print something, and the
-// empty argument, which is wurk called with nothing at all.
+// binary: every subcommand and alias except the ones that print a path, the
+// flags that print something, and the empty argument, which is wurk called
+// with nothing at all.
 func passthrough(root *cobra.Command) []string {
 	names := []string{"", "-h", "--help", "--version"}
 	for _, sub := range root.Commands() {
+		if sub.Annotations[annotationPrintsPath] == "true" {
+			continue
+		}
 		names = append(names, sub.Name())
 		names = append(names, sub.Aliases...)
 	}

@@ -7,6 +7,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/joakimgrr/wurk/internal/config"
+	"github.com/joakimgrr/wurk/internal/setup"
 	"github.com/joakimgrr/wurk/internal/ui"
 	"github.com/joakimgrr/wurk/internal/worktree"
 )
@@ -64,9 +65,27 @@ the file, which beats the built-in default.`,
 			root, source := m.Root()
 			fmt.Fprintf(out, "%s  %s %s\n", ui.Key("worktree dir"), ui.Shorten(root), ui.Dim("("+string(source)+")"))
 			fmt.Fprintf(out, "%s  %s\n", ui.Key("base branch "), m.Base())
+
+			steps := setup.Steps(m.Setup())
+			if len(steps) == 0 {
+				fmt.Fprintf(out, "%s  %s\n", ui.Key("setup       "), ui.Dim("nothing configured for this repository"))
+				return nil
+			}
+			fmt.Fprintf(out, "%s  %s\n", ui.Key("setup       "), ui.Dim(plural(len(steps), "step")))
+			for _, step := range steps {
+				ui.SetupStep(out, step)
+			}
 			return nil
 		},
 	}
 	cmd.Flags().BoolVar(&write, "init", false, "write a commented starter file if there is none")
 	return cmd
+}
+
+// plural renders a count with its noun, so that one step is not "1 steps".
+func plural(n int, noun string) string {
+	if n == 1 {
+		return fmt.Sprintf("%d %s", n, noun)
+	}
+	return fmt.Sprintf("%d %ss", n, noun)
 }

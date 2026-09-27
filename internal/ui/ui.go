@@ -4,6 +4,8 @@
 package ui
 
 import (
+	"bufio"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -15,6 +17,7 @@ import (
 	"github.com/charmbracelet/x/term"
 
 	"github.com/joakimgrr/wurk/internal/git"
+	"github.com/joakimgrr/wurk/internal/setup"
 	"github.com/joakimgrr/wurk/internal/worktree"
 )
 
@@ -59,6 +62,40 @@ func Info(w io.Writer, format string, a ...any) {
 // Warn reports something that worked but is worth noticing.
 func Warn(w io.Writer, format string, a ...any) {
 	fmt.Fprintln(w, yellow.Render("!")+" "+fmt.Sprintf(format, a...))
+}
+
+// Confirm asks a yes or no question, putting it to out and reading the answer
+// from in. Anything but yes is no. Input that is not a terminal is not asked
+// at all: a script left hanging on a prompt nobody can see is worse than one
+// that stops and says why.
+func Confirm(in io.Reader, out io.Writer, question string) (bool, error) {
+	file, ok := in.(*os.File)
+	if !ok || !term.IsTerminal(file.Fd()) {
+		return false, errors.New("no terminal to ask on; pass --yes to go ahead unasked")
+	}
+	fmt.Fprint(out, yellow.Render("?")+" "+question+dim.Render(" [y/N] "))
+	answer, err := bufio.NewReader(in).ReadString('\n')
+	if err != nil && answer == "" {
+		fmt.Fprintln(out)
+		return false, nil
+	}
+	switch strings.ToLower(strings.TrimSpace(answer)) {
+	case "y", "yes":
+		return true, nil
+	default:
+		return false, nil
+	}
+}
+
+// SetupStep reports one step of a worktree's setup, indented under the line
+// that announced the worktree itself.
+func SetupStep(w io.Writer, step setup.Step) {
+	kind := dim.Render(fmt.Sprintf("  %-7s", step.Kind))
+	if step.Skipped != "" {
+		fmt.Fprintln(w, kind+dim.Render(step.What+" — "+step.Skipped))
+		return
+	}
+	fmt.Fprintln(w, kind+step.What)
 }
 
 // Dim styles secondary text.

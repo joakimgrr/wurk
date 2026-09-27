@@ -3,13 +3,16 @@
 package worktree
 
 import (
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/joakimgrr/wurk/internal/config"
 	"github.com/joakimgrr/wurk/internal/git"
+	"github.com/joakimgrr/wurk/internal/setup"
 )
 
 // EnvDir overrides the directory new worktrees are created in.
@@ -30,6 +33,7 @@ type Manager struct {
 	repo   *git.Repo
 	root   string
 	source Source
+	cfg    config.Config
 	base   string // cached, the revision branches are compared and created from
 }
 
@@ -46,7 +50,7 @@ func Open(dirOverride string, cfg config.Config) (*Manager, error) {
 		return nil, err
 	}
 	root, source := resolveRoot(repo.Root, dirOverride, cfg)
-	return &Manager{repo: repo, root: root, source: source}, nil
+	return &Manager{repo: repo, root: root, source: source, cfg: cfg}, nil
 }
 
 // Root is the directory new worktrees are created in, and Source says which
@@ -64,6 +68,74 @@ func (m *Manager) Base() string {
 	return m.base
 }
 
+// Locate resolves the worktree a command should act on: the one named, or
+// else the one the caller is standing in.
+func (m *Manager) Locate(args []string) (branch, path string, err error) {
+	if len(args) == 1 {
+		wt, found := m.repo.WorktreeForBranch(args[0])
+		if !found {
+			return "", "", fmt.Errorf("no worktree for %s", args[0])
+		}
+		return wt.Branch, wt.Path, nil
+	}
+	if m.repo.Current == "" {
+		return "", "", errors.New("name a worktree, or run this from inside one")
+	}
+	worktrees, err := m.repo.Worktrees()
+	if err != nil {
+		return "", "", err
+	}
+	for _, wt := range worktrees {
+		if samePath(wt.Path, m.repo.Current) {
+			if wt.Branch == "" {
+				return "", "", errors.New("this worktree has no branch checked out")
+			}
+			return wt.Branch, wt.Path, nil
+		}
+	}
+	return "", "", errors.New("name a worktree, or run this from inside one")
+}
+
+// Setup is what this repository's configuration says to do with a new
+// worktree. It is empty when nothing is configured.
+func (m *Manager) Setup() config.Setup {
+	return m.cfg.SetupFor(m.repo.Root)
+}
+
+// OnFailure says what to do with a worktree of this repository whose setup
+// did not finish.
+func (m *Manager) OnFailure() config.OnFailure {
+	return m.cfg.OnFailureFor(m.repo.Root)
+}
+
+// Rollback undoes a Create whose setup failed: the worktree goes, forcibly,
+// because setup will have left files behind that git would otherwise refuse to
+// discard. The branch goes with it only when this call is what created it.
+func (m *Manager) Rollback(res Result, branch string) error {
+	if err := m.repo.RemoveWorktree(res.Path, true); err != nil {
+		return err
+	}
+	if res.Base == "" {
+		return nil // the branch was there before; it is not ours to delete
+	}
+	return m.repo.DeleteBranch(branch, true)
+}
+
+// RunSetup prepares a worktree that already exists, streaming what the
+// commands print to out and announcing each step as it is reached.
+func (m *Manager) RunSetup(path, branch string, out io.Writer, announce func(setup.Step)) ([]setup.Step, error) {
+	steps := m.Setup()
+	if steps.IsEmpty() {
+		return nil, nil
+	}
+	return setup.Run(steps, setup.Env{
+		Worktree: path,
+		Repo:     m.repo.Root,
+		Branch:   branch,
+		Base:     m.Base(),
+	}, out, announce)
+}
+
 // Result describes what Create did, so the caller can report it.
 type Result struct {
 	// Path is the worktree's directory.
@@ -74,6 +146,9 @@ type Result struct {
 	// Existed reports that the branch was already checked out somewhere and
 	// nothing new was created.
 	Existed bool
+	// Orphan reports that the branch was started with no history behind it,
+	// there having been nothing in the repository to branch from.
+	Orphan bool
 }
 
 // Create checks name out as a branch in its own worktree, creating both if
@@ -94,6 +169,14 @@ func (m *Manager) Create(name, base string) (Result, error) {
 	if m.repo.BranchExists(name) {
 		base = "" // check the existing branch out as it is
 	} else if base == "" {
+		if !m.repo.HasCommits() {
+			// Nothing to branch from yet, which is no reason to refuse: git
+			// starts an unborn branch here, just as checkout -b would.
+			if err := m.repo.AddOrphanWorktree(path, name); err != nil {
+				return Result{}, err
+			}
+			return Result{Path: path, Orphan: true}, nil
+		}
 		base = m.Base()
 	}
 	if base != "" && !m.repo.RevExists(base) {
@@ -119,9 +202,74 @@ type RemoveResult struct {
 	BranchDeleted bool
 }
 
+// Concerns is what stands in the way of being finished with a worktree.
+type Concerns struct {
+	State   git.MergeState
+	Base    string
+	Changes int
+}
+
+// Any reports whether there is anything here worth asking about.
+func (c Concerns) Any() bool {
+	return c.State == git.NotMerged || c.Changes > 0
+}
+
+// Describe phrases the concerns for a question put to the person.
+func (c Concerns) Describe() string {
+	var parts []string
+	if c.State == git.NotMerged {
+		parts = append(parts, "is not merged into "+c.Base)
+	}
+	switch {
+	case c.Changes == 1:
+		parts = append(parts, "has 1 uncommitted change")
+	case c.Changes > 1:
+		parts = append(parts, fmt.Sprintf("has %d uncommitted changes", c.Changes))
+	}
+	return strings.Join(parts, " and ")
+}
+
+// Inspect reports what would be lost by removing a worktree.
+func (m *Manager) Inspect(branch, path string) Concerns {
+	return Concerns{
+		State:   m.repo.MergeStateOf(branch, m.Base()),
+		Base:    m.Base(),
+		Changes: m.repo.Changes(path),
+	}
+}
+
+// EnsureRemovable reports the reason a worktree must not be removed, if there
+// is one. These are the guards no amount of forcing gets past, so a caller
+// that is about to ask the person a question should ask this first.
+func (m *Manager) EnsureRemovable(name string) error {
+	if err := m.repo.CheckBranchName(name); err != nil {
+		return err
+	}
+	wt, hasWorktree := m.repo.WorktreeForBranch(name)
+	if !hasWorktree && !m.repo.BranchExists(name) {
+		return fmt.Errorf("no worktree or branch named %s", name)
+	}
+	if hasWorktree && wt.Main {
+		return fmt.Errorf("%s is the repository's main worktree", wt.Path)
+	}
+	base := m.Base()
+	if name == base || name == strings.TrimPrefix(base, "origin/") {
+		return fmt.Errorf("%s is the repository's default branch", name)
+	}
+	return nil
+}
+
+// IsCurrent reports whether path is the worktree the caller is standing in.
+func (m *Manager) IsCurrent(path string) bool {
+	return samePath(path, m.repo.Current)
+}
+
 // Remove deletes the worktree for name and the branch with it. Unless force is
-// set, a branch whose work has not landed in the base is refused, and git
-// refuses a worktree with uncommitted changes.
+// set, a branch whose work has not landed in the base is refused, and so is a
+// worktree with uncommitted changes.
+//
+// The worktree the caller is standing in is fair game: the caller is expected
+// to move the shell somewhere that still exists afterwards.
 func (m *Manager) Remove(name string, force bool) (RemoveResult, error) {
 	if err := m.repo.CheckBranchName(name); err != nil {
 		return RemoveResult{}, err
@@ -129,21 +277,12 @@ func (m *Manager) Remove(name string, force bool) (RemoveResult, error) {
 	base := m.Base()
 	res := RemoveResult{Branch: name, Base: base, Forced: force}
 
+	if err := m.EnsureRemovable(name); err != nil {
+		return res, err
+	}
 	wt, hasWorktree := m.repo.WorktreeForBranch(name)
 	hasBranch := m.repo.BranchExists(name)
-	if !hasWorktree && !hasBranch {
-		return res, fmt.Errorf("no worktree or branch named %s", name)
-	}
-	if name == base || name == strings.TrimPrefix(base, "origin/") {
-		return res, fmt.Errorf("%s is the repository's default branch", name)
-	}
 	if hasWorktree {
-		if wt.Main {
-			return res, fmt.Errorf("%s is the repository's main worktree", wt.Path)
-		}
-		if samePath(wt.Path, m.repo.Current) {
-			return res, fmt.Errorf("you are inside %s; run this from %s", wt.Path, m.repo.Root)
-		}
 		res.Path = wt.Path
 	}
 
