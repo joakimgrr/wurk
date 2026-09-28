@@ -7,7 +7,7 @@
 <br><br>
 <br><br>
 
-A git worktree per task, with the `cd` included.
+CLI tool that helps you manage git worktrees and multitasking
 
 ```console
 $ wurk PROJ-2222-work-on-login-system
@@ -37,6 +37,7 @@ follows it. Without it, `cd "$(wurk some-name)"` does the same by hand.
 | `wurk <name>`       | create the branch and worktree, and move into it        |
 | `wurk list`         | what exists and how it stands                           |
 | `wurk done [name]`  | finish with a worktree: remove it and delete its branch |
+| `wurk tidy`         | sweep up the worktrees whose work has landed            |
 | `wurk setup [name]` | re-run this repository's setup on a worktree            |
 | `wurk config`       | show the settings; `--init` writes a starter file       |
 
@@ -90,6 +91,33 @@ Anything but `y` leaves it alone. With no terminal to ask on it stops and says
 so rather than hanging, so `--yes` is what a script wants. The repository keeps
 whatever branch it already had checked out — `done` reports it rather than
 changing it. `rm`, `remove` and `delete` all mean `done`.
+
+### Tidying up
+
+For the branches you finished with a while ago, whose pull requests merged
+while you were somewhere else:
+
+```console
+$ wurk tidy
+   BRANCH         CHANGES  VS ORIGIN/MAIN  STATE          PATH
+   ─────────────────────────────────────────────────────────────────
+   merged-pr      clean    ↓2              merged         merged-pr
+   squashed-pr    clean    ↑1 ↓3           squash-merged  squashed-pr
+
+· keeping has-scratch — 1 uncommitted change
+· keeping still-open — not merged into origin/main
+? remove 2 worktrees? [y/N] y
+✓ removed 2 worktrees and 2 branches
+```
+
+It fetches first. A branch merged on the forge is not merged *here* until the
+remote-tracking branches know about it, and that is exactly the branch worth
+tidying away — `--no-fetch` skips that when you are offline. Everything left
+standing is listed with the reason, so a survivor is never a mystery.
+
+The worktree you are standing in is always kept: `wurk done` is what takes
+that one, since it can move you out first.
+
 
 ## Configuration
 

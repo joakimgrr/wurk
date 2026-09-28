@@ -247,6 +247,27 @@ func (r *Repo) AddWorktree(path, branch, base string) error {
 	return err
 }
 
+// HasRemote reports whether there is anywhere to fetch from.
+func (r *Repo) HasRemote() bool {
+	out, err := run(r.Root, "remote")
+	return err == nil && out != ""
+}
+
+// Fetch updates the remote-tracking branches. Without it, a branch merged on
+// the forge days ago still looks unmerged here, which is exactly the branch
+// worth tidying away.
+func (r *Repo) Fetch() error {
+	_, err := run(r.Root, "fetch", "--prune", "--quiet")
+	return err
+}
+
+// PruneWorktreeRecords drops git's administrative records for worktrees whose
+// directories someone removed by hand.
+func (r *Repo) PruneWorktreeRecords() error {
+	_, err := run(r.Root, "worktree", "prune")
+	return err
+}
+
 // AddOrphanWorktree checks a new branch out at path with no history behind
 // it, which is what a repository with nothing committed yet can offer. Git
 // infers this for a plain -b too, but asking for it outright keeps the intent

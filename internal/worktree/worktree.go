@@ -68,6 +68,47 @@ func (m *Manager) Base() string {
 	return m.base
 }
 
+// Fetch brings the remote-tracking branches up to date, so that work merged
+// elsewhere is known to have been merged here. A repository with no remote has
+// nothing to do, and reports no error.
+func (m *Manager) Fetch() error {
+	if !m.repo.HasRemote() {
+		return nil
+	}
+	return m.repo.Fetch()
+}
+
+// PruneRecords forgets worktrees whose directories are gone.
+func (m *Manager) PruneRecords() error {
+	return m.repo.PruneWorktreeRecords()
+}
+
+// KeepReason says why a worktree is not one to tidy away, and is empty for one
+// that is. A worktree the caller is standing in is kept whatever its state:
+// removing it would leave the shell nowhere, which is "wurk done"'s job to
+// handle, not this one's.
+func (m *Manager) KeepReason(e Entry) string {
+	switch {
+	case e.Main:
+		return "the repository's main worktree"
+	case e.Detached:
+		return "no branch checked out"
+	case e.Locked:
+		return "locked"
+	case e.Prunable:
+		return "its directory is missing"
+	case e.Changes == 1:
+		return "1 uncommitted change"
+	case e.Changes > 1:
+		return fmt.Sprintf("%d uncommitted changes", e.Changes)
+	case e.State == git.NotMerged:
+		return "not merged into " + m.Base()
+	case e.Current:
+		return "you are standing in it"
+	}
+	return ""
+}
+
 // Locate resolves the worktree a command should act on: the one named, or
 // else the one the caller is standing in.
 func (m *Manager) Locate(args []string) (branch, path string, err error) {
@@ -307,9 +348,12 @@ func (m *Manager) Remove(name string, force bool) (RemoveResult, error) {
 		}
 	}
 	if hasBranch {
-		// A squash-merged branch is not an ancestor, so git's own check would
-		// refuse it even though the work has landed.
-		if err := m.repo.DeleteBranch(name, force || res.State == git.Squashed); err != nil {
+		// Getting here means the work has landed or force said to go anyway,
+		// judged against the base branch. Git's own -d check judges against
+		// HEAD instead, which lags the base whenever the base is a remote
+		// branch — so it would refuse exactly the branches worth tidying, and
+		// a squash-merged one is no ancestor of anything to begin with.
+		if err := m.repo.DeleteBranch(name, true); err != nil {
 			return res, err
 		}
 		res.BranchDeleted = true

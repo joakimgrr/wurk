@@ -161,6 +161,71 @@ func TestRemoveSquashMerged(t *testing.T) {
 	}
 }
 
+// TestRemoveABranchMergedOnlyUpstream is the case "wurk tidy" exists for: the
+// pull request merged on the forge while this clone sat still, so the work has
+// landed in origin/main but not in the local main. Git's own "branch -d" judges
+// against HEAD and refuses such a branch, which is why wurk does the judging.
+func TestRemoveABranchMergedOnlyUpstream(t *testing.T) {
+	repo := newRepoWithRemote(t)
+	m, _ := newManager(t, repo)
+	res, err := m.Create("landed-upstream", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	commit(t, res.Path, "a.txt", "work that got merged")
+
+	// Somebody else merges it and pushes, far away from this clone.
+	origin := gitOutput(t, repo, "remote", "get-url", "origin")
+	elsewhere := filepath.Join(t.TempDir(), "elsewhere")
+	runGit(t, repo, "clone", "--quiet", origin, elsewhere)
+	runGit(t, elsewhere, "config", "user.email", "test@example.com")
+	runGit(t, elsewhere, "config", "user.name", "test")
+	runGit(t, elsewhere, "fetch", "--quiet", repo, "landed-upstream:landed-upstream")
+	runGit(t, elsewhere, "merge", "--no-ff", "-m", "merge the pull request", "landed-upstream")
+	runGit(t, elsewhere, "push", "--quiet", "origin", "main")
+
+	runGit(t, repo, "fetch", "--quiet", "--prune")
+
+	// The local main knows nothing of it, which is the whole point.
+	if gitOutput(t, repo, "branch", "--merged", "main", "--format=%(refname:short)") == "landed-upstream" {
+		t.Fatal("the local main already has it; this test proves nothing")
+	}
+	if _, err := m.Remove("landed-upstream", false); err != nil {
+		t.Fatalf("Remove refused work that landed upstream: %v", err)
+	}
+	if branchExists(t, repo, "landed-upstream") {
+		t.Error("the branch is still there")
+	}
+}
+
+// TestKeepReason covers what "wurk tidy" sweeps and what it leaves standing.
+func TestKeepReason(t *testing.T) {
+	m, _ := newManager(t, newRepo(t))
+
+	for _, tc := range []struct {
+		name  string
+		entry Entry
+		want  string
+	}{
+		{"merged and clean", Entry{State: git.Merged}, ""},
+		{"squash-merged", Entry{State: git.Squashed}, ""},
+		{"never started", Entry{State: git.Unstarted}, ""},
+		{"the main worktree", Entry{Main: true, State: git.Merged}, "the repository's main worktree"},
+		{"unmerged", Entry{State: git.NotMerged}, "not merged into main"},
+		{"one change", Entry{State: git.Merged, Changes: 1}, "1 uncommitted change"},
+		{"several changes", Entry{State: git.Merged, Changes: 3}, "3 uncommitted changes"},
+		{"detached", Entry{Detached: true}, "no branch checked out"},
+		{"locked", Entry{Locked: true, State: git.Merged}, "locked"},
+		{"standing in it", Entry{State: git.Merged, Current: true}, "you are standing in it"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := m.KeepReason(tc.entry); got != tc.want {
+				t.Errorf("KeepReason = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestRemoveUnmerged is the safety net: work that has not landed is refused
 // until --force says otherwise.
 func TestRemoveUnmerged(t *testing.T) {

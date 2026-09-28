@@ -122,7 +122,7 @@ else on stderr, so the shell function from "wurk shell-init" can cd into it.`,
 	cmd.Flags().StringVar(&base, "base", "", "revision to branch from (default: the repo's default branch)")
 	cmd.Flags().BoolVar(&noSetup, "no-setup", false, "skip the setup configured for this repository")
 
-	cmd.AddCommand(newListCmd(g), newDoneCmd(g), newSetupCmd(g), newConfigCmd(g), newShellInitCmd())
+	cmd.AddCommand(newListCmd(g), newDoneCmd(g), newTidyCmd(g), newSetupCmd(g), newConfigCmd(g), newShellInitCmd())
 	return cmd
 }
 
